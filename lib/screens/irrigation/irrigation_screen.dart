@@ -1,4 +1,8 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
+
+import '../../services/api_service.dart';
 
 class IrrigationScreen extends StatefulWidget {
   const IrrigationScreen({super.key});
@@ -9,17 +13,14 @@ class IrrigationScreen extends StatefulWidget {
 
 class _IrrigationScreenState extends State<IrrigationScreen> {
   // ==========================================================
-  // DEMO SENSOR DATA
+  // REAL SENSOR DATA
   // ==========================================================
 
-  // Temporary values.
-  // Later these will come from the ESP32/backend.
+  double soilMoisture = 0.0;
+  double temperature = 0.0;
+  double humidity = 0.0;
 
-  double soilMoisture = 49.0;
-  double temperature = 30.5;
-  double humidity = 84.9;
-
-  bool waterAvailable = true;
+  bool waterAvailable = false;
   bool rainDetected = false;
 
   // ==========================================================
@@ -30,68 +31,135 @@ class _IrrigationScreenState extends State<IrrigationScreen> {
   // true  = MANUAL
   bool manualMode = false;
 
-  // Motor state
+  // Real pump state from ESP32/Blynk
   bool motorOn = false;
 
   // Rain lockout
   bool rainLockout = false;
 
-  // Demo lockout time
+  // Remaining rain lockout time
   int lockoutSeconds = 0;
 
   // ==========================================================
-  // MANUAL MODE TOGGLE
+  // API / REFRESH STATE
   // ==========================================================
 
-  void changeManualMode(bool value) {
-    setState(() {
-      manualMode = value;
+  bool isLoading = true;
+  String? errorMessage;
 
-      // Motor always starts OFF when changing mode.
-      motorOn = false;
-    });
+  Timer? refreshTimer;
+
+  // ==========================================================
+  // INIT
+  // ==========================================================
+
+  @override
+  void initState() {
+    super.initState();
+
+    // Load data immediately when screen opens.
+    refreshData();
+
+    // Automatically refresh every 5 seconds.
+    refreshTimer = Timer.periodic(
+      const Duration(seconds: 5),
+      (_) => refreshData(),
+    );
   }
 
   // ==========================================================
-  // MOTOR TOGGLE
-  // ==========================================================
-
-  void changeMotorState(bool value) {
-    // Motor can only be controlled in manual mode.
-    if (!manualMode) {
-      return;
-    }
-
-    // Rain protection
-    if (rainDetected || rainLockout) {
-      return;
-    }
-
-    // Water protection
-    if (!waterAvailable) {
-      return;
-    }
-
-    setState(() {
-      motorOn = value;
-    });
-  }
-
-  // ==========================================================
-  // REFRESH
+  // REFRESH SENSOR DATA
   // ==========================================================
 
   Future<void> refreshData() async {
-    // Temporary delay.
-    //
-    // Later:
-    // GET /api/sensors/latest
+    try {
+      final data = await ApiService.getSensorData();
 
-    await Future.delayed(const Duration(milliseconds: 700));
+      if (!mounted) return;
 
-    if (!mounted) return;
+      setState(() {
+        // ------------------------------------------------------
+        // SENSOR VALUES
+        // ------------------------------------------------------
 
-    setState(() {});
+        soilMoisture =
+            (data['soil_moisture'] as num?)?.toDouble() ?? 0.0;
+
+        temperature =
+            (data['temperature'] as num?)?.toDouble() ?? 0.0;
+
+        humidity =
+            (data['humidity'] as num?)?.toDouble() ?? 0.0;
+
+        // ------------------------------------------------------
+        // WATER STATUS
+        // ------------------------------------------------------
+
+        waterAvailable =
+            data['water_status']?.toString().toUpperCase() == 'AVAILABLE';
+
+        // ------------------------------------------------------
+        // RAIN STATUS
+        // ------------------------------------------------------
+
+        rainDetected =
+            data['rain_status']?.toString().toUpperCase() == 'RAIN';
+
+        // ------------------------------------------------------
+        // PUMP STATUS
+        // ------------------------------------------------------
+
+        motorOn =
+            data['pump_status']?.toString().toUpperCase() == 'ON';
+
+        // ------------------------------------------------------
+        // CONTROL MODE
+        // 0 = AUTO
+        // 1 = MANUAL
+        // ------------------------------------------------------
+
+        manualMode =
+            (data['control_mode'] as num?)?.toInt() == 1;
+
+        // ------------------------------------------------------
+        // RAIN LOCKOUT
+        // ------------------------------------------------------
+
+        rainLockout =
+            (data['rain_lockout'] as num?)?.toInt() == 1;
+
+        // ------------------------------------------------------
+        // LOCKOUT REMAINING TIME
+        // ------------------------------------------------------
+
+        lockoutSeconds =
+            (data['lockout_remaining_seconds'] as num?)?.toInt() ?? 0;
+
+        // ------------------------------------------------------
+        // API SUCCESS
+        // ------------------------------------------------------
+
+        isLoading = false;
+        errorMessage = null;
+      });
+    } catch (e) {
+      if (!mounted) return;
+
+      setState(() {
+        isLoading = false;
+        errorMessage = 'Failed to load sensor data';
+      });
+    }
+  }
+
+  // ==========================================================
+  // DISPOSE
+  // ==========================================================
+
+  @override
+  void dispose() {
+    refreshTimer?.cancel();
+    super.dispose();
   }
 
   // ==========================================================
@@ -118,7 +186,6 @@ class _IrrigationScreenState extends State<IrrigationScreen> {
             icon: const Icon(Icons.refresh_rounded),
             tooltip: 'Refresh',
           ),
-
           const SizedBox(width: 8),
         ],
       ),
@@ -136,6 +203,23 @@ class _IrrigationScreenState extends State<IrrigationScreen> {
 
             children: [
               // ==================================================
+              // ERROR MESSAGE
+              // ==================================================
+
+              if (errorMessage != null)
+                _buildErrorCard(),
+
+              // ==================================================
+              // LOADING
+              // ==================================================
+
+              if (isLoading)
+                const Padding(
+                  padding: EdgeInsets.only(bottom: 16),
+                  child: LinearProgressIndicator(),
+                ),
+
+              // ==================================================
               // CURRENT STATUS
               // ==================================================
 
@@ -146,9 +230,13 @@ class _IrrigationScreenState extends State<IrrigationScreen> {
               // ==================================================
               // CONTROLS
               // ==================================================
+
               const Text(
                 'Irrigation Controls',
-                style: TextStyle(fontSize: 19, fontWeight: FontWeight.bold),
+                style: TextStyle(
+                  fontSize: 19,
+                  fontWeight: FontWeight.bold,
+                ),
               ),
 
               const SizedBox(height: 10),
@@ -160,9 +248,13 @@ class _IrrigationScreenState extends State<IrrigationScreen> {
               // ==================================================
               // FIELD CONDITIONS
               // ==================================================
+
               const Text(
                 'Field Conditions',
-                style: TextStyle(fontSize: 19, fontWeight: FontWeight.bold),
+                style: TextStyle(
+                  fontSize: 19,
+                  fontWeight: FontWeight.bold,
+                ),
               ),
 
               const SizedBox(height: 10),
@@ -174,9 +266,13 @@ class _IrrigationScreenState extends State<IrrigationScreen> {
               // ==================================================
               // SAFETY & ENVIRONMENT
               // ==================================================
+
               const Text(
                 'Safety & Environment',
-                style: TextStyle(fontSize: 19, fontWeight: FontWeight.bold),
+                style: TextStyle(
+                  fontSize: 19,
+                  fontWeight: FontWeight.bold,
+                ),
               ),
 
               const SizedBox(height: 10),
@@ -196,11 +292,61 @@ class _IrrigationScreenState extends State<IrrigationScreen> {
   }
 
   // ==========================================================
+  // ERROR CARD
+  // ==========================================================
+
+  Widget _buildErrorCard() {
+    return Container(
+      width: double.infinity,
+
+      margin: const EdgeInsets.only(bottom: 16),
+
+      padding: const EdgeInsets.all(14),
+
+      decoration: BoxDecoration(
+        color: Colors.red.shade50,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(
+          color: Colors.red.shade200,
+        ),
+      ),
+
+      child: Row(
+        children: [
+          Icon(
+            Icons.error_outline_rounded,
+            color: Colors.red.shade700,
+          ),
+
+          const SizedBox(width: 10),
+
+          Expanded(
+            child: Text(
+              errorMessage!,
+              style: TextStyle(
+                color: Colors.red.shade700,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+          ),
+
+          IconButton(
+            onPressed: refreshData,
+            icon: const Icon(Icons.refresh_rounded),
+            color: Colors.red.shade700,
+          ),
+        ],
+      ),
+    );
+  }
+
+  // ==========================================================
   // PUMP STATUS
   // ==========================================================
 
   Widget _buildPumpStatus() {
-    final Color statusColor = motorOn ? Colors.blue : Colors.grey.shade600;
+    final Color statusColor =
+        motorOn ? Colors.blue : Colors.grey.shade600;
 
     return Container(
       width: double.infinity,
@@ -215,11 +361,19 @@ class _IrrigationScreenState extends State<IrrigationScreen> {
           end: Alignment.bottomRight,
 
           colors: motorOn
-              ? [Colors.blue.shade50, Colors.white]
-              : [Colors.white, Colors.grey.shade50],
+              ? [
+                  Colors.blue.shade50,
+                  Colors.white,
+                ]
+              : [
+                  Colors.white,
+                  Colors.grey.shade50,
+                ],
         ),
 
-        border: Border.all(color: Colors.grey.shade200),
+        border: Border.all(
+          color: Colors.grey.shade200,
+        ),
       ),
 
       child: Column(
@@ -233,7 +387,9 @@ class _IrrigationScreenState extends State<IrrigationScreen> {
                 decoration: BoxDecoration(
                   shape: BoxShape.circle,
 
-                  color: motorOn ? Colors.blue.shade100 : Colors.grey.shade200,
+                  color: motorOn
+                      ? Colors.blue.shade100
+                      : Colors.grey.shade200,
                 ),
 
                 child: Icon(
@@ -247,7 +403,8 @@ class _IrrigationScreenState extends State<IrrigationScreen> {
 
               Expanded(
                 child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
+                  crossAxisAlignment:
+                      CrossAxisAlignment.start,
 
                   children: [
                     Text(
@@ -274,7 +431,6 @@ class _IrrigationScreenState extends State<IrrigationScreen> {
 
               _statusBadge(
                 motorOn ? 'ON' : 'OFF',
-
                 motorOn ? Colors.blue : Colors.grey,
               ),
             ],
@@ -285,11 +441,13 @@ class _IrrigationScreenState extends State<IrrigationScreen> {
           Container(
             width: double.infinity,
 
-            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 11),
+            padding: const EdgeInsets.symmetric(
+              horizontal: 14,
+              vertical: 11,
+            ),
 
             decoration: BoxDecoration(
               color: Colors.grey.shade100,
-
               borderRadius: BorderRadius.circular(14),
             ),
 
@@ -333,7 +491,10 @@ class _IrrigationScreenState extends State<IrrigationScreen> {
 
   Widget _buildControlCard() {
     final bool motorControlAvailable =
-        manualMode && waterAvailable && !rainDetected && !rainLockout;
+        manualMode &&
+        waterAvailable &&
+        !rainDetected &&
+        !rainLockout;
 
     return Container(
       width: double.infinity,
@@ -343,7 +504,9 @@ class _IrrigationScreenState extends State<IrrigationScreen> {
 
         borderRadius: BorderRadius.circular(22),
 
-        border: Border.all(color: Colors.grey.shade200),
+        border: Border.all(
+          color: Colors.grey.shade200,
+        ),
       ),
 
       child: Column(
@@ -353,21 +516,31 @@ class _IrrigationScreenState extends State<IrrigationScreen> {
           // --------------------------------------------------
 
           Padding(
-            padding: const EdgeInsets.fromLTRB(17, 17, 12, 15),
+            padding: const EdgeInsets.fromLTRB(
+              17,
+              17,
+              12,
+              15,
+            ),
 
             child: Row(
               children: [
-                _controlIcon(Icons.tune_rounded, Colors.orange),
+                _controlIcon(
+                  Icons.tune_rounded,
+                  Colors.orange,
+                ),
 
                 const SizedBox(width: 13),
 
                 Expanded(
                   child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
+                    crossAxisAlignment:
+                        CrossAxisAlignment.start,
 
                     children: [
                       const Text(
                         'Manual Mode',
+
                         style: TextStyle(
                           fontSize: 16,
                           fontWeight: FontWeight.bold,
@@ -390,36 +563,58 @@ class _IrrigationScreenState extends State<IrrigationScreen> {
                   ),
                 ),
 
-                Switch(value: manualMode, onChanged: changeManualMode),
+                // ------------------------------------------------
+                // TEMPORARILY READ-ONLY
+                //
+                // The real control API will be connected next.
+                // ------------------------------------------------
+
+                Switch(
+                  value: manualMode,
+                  onChanged: null,
+                ),
               ],
             ),
           ),
 
-          Divider(height: 1, color: Colors.grey.shade200),
+          Divider(
+            height: 1,
+            color: Colors.grey.shade200,
+          ),
 
           // --------------------------------------------------
           // MOTOR
           // --------------------------------------------------
+
           Padding(
-            padding: const EdgeInsets.fromLTRB(17, 15, 12, 17),
+            padding: const EdgeInsets.fromLTRB(
+              17,
+              15,
+              12,
+              17,
+            ),
 
             child: Row(
               children: [
                 _controlIcon(
                   Icons.power_settings_new_rounded,
 
-                  motorControlAvailable ? Colors.blue : Colors.grey,
+                  motorControlAvailable
+                      ? Colors.blue
+                      : Colors.grey,
                 ),
 
                 const SizedBox(width: 13),
 
                 Expanded(
                   child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
+                    crossAxisAlignment:
+                        CrossAxisAlignment.start,
 
                     children: [
                       const Text(
                         'Motor',
+
                         style: TextStyle(
                           fontSize: 16,
                           fontWeight: FontWeight.bold,
@@ -448,10 +643,15 @@ class _IrrigationScreenState extends State<IrrigationScreen> {
                   ),
                 ),
 
+                // ------------------------------------------------
+                // TEMPORARILY READ-ONLY
+                //
+                // Real motor control will be connected next.
+                // ------------------------------------------------
+
                 Switch(
                   value: motorOn,
-
-                  onChanged: motorControlAvailable ? changeMotorState : null,
+                  onChanged: null,
                 ),
               ],
             ),
@@ -476,7 +676,8 @@ class _IrrigationScreenState extends State<IrrigationScreen> {
                 iconColor: Colors.green,
                 title: 'Soil Moisture',
 
-                value: '${soilMoisture.toStringAsFixed(0)}%',
+                value:
+                    '${soilMoisture.toStringAsFixed(0)}%',
 
                 subtitle: soilMoisture < 30
                     ? 'Dry'
@@ -494,7 +695,8 @@ class _IrrigationScreenState extends State<IrrigationScreen> {
                 iconColor: Colors.orange,
                 title: 'Temperature',
 
-                value: '${temperature.toStringAsFixed(1)}°C',
+                value:
+                    '${temperature.toStringAsFixed(1)}°C',
 
                 subtitle: 'Current',
               ),
@@ -512,7 +714,8 @@ class _IrrigationScreenState extends State<IrrigationScreen> {
                 iconColor: Colors.indigo,
                 title: 'Humidity',
 
-                value: '${humidity.toStringAsFixed(1)}%',
+                value:
+                    '${humidity.toStringAsFixed(1)}%',
 
                 subtitle: 'Air humidity',
               ),
@@ -526,7 +729,9 @@ class _IrrigationScreenState extends State<IrrigationScreen> {
                 iconColor: Colors.blue,
                 title: 'Water Supply',
 
-                value: waterAvailable ? 'Available' : 'Unavailable',
+                value: waterAvailable
+                    ? 'Available'
+                    : 'Unavailable',
 
                 subtitle: 'Tank status',
               ),
@@ -556,11 +761,14 @@ class _IrrigationScreenState extends State<IrrigationScreen> {
 
         borderRadius: BorderRadius.circular(20),
 
-        border: Border.all(color: Colors.grey.shade200),
+        border: Border.all(
+          color: Colors.grey.shade200,
+        ),
       ),
 
       child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
+        crossAxisAlignment:
+            CrossAxisAlignment.start,
 
         children: [
           Container(
@@ -570,10 +778,16 @@ class _IrrigationScreenState extends State<IrrigationScreen> {
             decoration: BoxDecoration(
               shape: BoxShape.circle,
 
-              color: iconColor.withValues(alpha: 0.12),
+              color: iconColor.withValues(
+                alpha: 0.12,
+              ),
             ),
 
-            child: Icon(icon, color: iconColor, size: 23),
+            child: Icon(
+              icon,
+              color: iconColor,
+              size: 23,
+            ),
           ),
 
           const SizedBox(height: 14),
@@ -581,7 +795,10 @@ class _IrrigationScreenState extends State<IrrigationScreen> {
           Text(
             title,
 
-            style: TextStyle(fontSize: 12, color: Colors.grey.shade600),
+            style: TextStyle(
+              fontSize: 12,
+              color: Colors.grey.shade600,
+            ),
           ),
 
           const SizedBox(height: 4),
@@ -589,7 +806,10 @@ class _IrrigationScreenState extends State<IrrigationScreen> {
           Text(
             value,
 
-            style: const TextStyle(fontSize: 19, fontWeight: FontWeight.bold),
+            style: const TextStyle(
+              fontSize: 19,
+              fontWeight: FontWeight.bold,
+            ),
           ),
 
           const SizedBox(height: 3),
@@ -597,7 +817,10 @@ class _IrrigationScreenState extends State<IrrigationScreen> {
           Text(
             subtitle,
 
-            style: TextStyle(fontSize: 11, color: Colors.grey.shade500),
+            style: TextStyle(
+              fontSize: 11,
+              color: Colors.grey.shade500,
+            ),
           ),
         ],
       ),
@@ -610,13 +833,19 @@ class _IrrigationScreenState extends State<IrrigationScreen> {
 
   Widget _buildRainStatus() {
     return _environmentCard(
-      icon: rainDetected ? Icons.umbrella_rounded : Icons.wb_sunny_rounded,
+      icon: rainDetected
+          ? Icons.umbrella_rounded
+          : Icons.wb_sunny_rounded,
 
-      iconColor: rainDetected ? Colors.blue : Colors.amber.shade700,
+      iconColor: rainDetected
+          ? Colors.blue
+          : Colors.amber.shade700,
 
       title: 'Rain Status',
 
-      value: rainDetected ? 'Rain detected' : 'No rain',
+      value: rainDetected
+          ? 'Rain detected'
+          : 'No rain',
 
       description: rainDetected
           ? 'Irrigation is temporarily blocked'
@@ -639,7 +868,8 @@ class _IrrigationScreenState extends State<IrrigationScreen> {
 
         value: 'Inactive',
 
-        description: 'No rain lockout is active',
+        description:
+            'No rain lockout is active',
       );
     }
 
@@ -653,7 +883,9 @@ class _IrrigationScreenState extends State<IrrigationScreen> {
 
         borderRadius: BorderRadius.circular(20),
 
-        border: Border.all(color: Colors.orange.shade200),
+        border: Border.all(
+          color: Colors.orange.shade200,
+        ),
       ),
 
       child: Row(
@@ -678,13 +910,16 @@ class _IrrigationScreenState extends State<IrrigationScreen> {
 
           Expanded(
             child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
+              crossAxisAlignment:
+                  CrossAxisAlignment.start,
 
               children: [
                 const Text(
                   'Rain Lockout',
 
-                  style: TextStyle(fontWeight: FontWeight.bold),
+                  style: TextStyle(
+                    fontWeight: FontWeight.bold,
+                  ),
                 ),
 
                 const SizedBox(height: 4),
@@ -694,7 +929,10 @@ class _IrrigationScreenState extends State<IrrigationScreen> {
                   '${_formatDuration(lockoutSeconds)} '
                   'remaining',
 
-                  style: TextStyle(fontSize: 12, color: Colors.grey.shade700),
+                  style: TextStyle(
+                    fontSize: 12,
+                    color: Colors.grey.shade700,
+                  ),
                 ),
               ],
             ),
@@ -725,7 +963,9 @@ class _IrrigationScreenState extends State<IrrigationScreen> {
 
         borderRadius: BorderRadius.circular(20),
 
-        border: Border.all(color: Colors.grey.shade200),
+        border: Border.all(
+          color: Colors.grey.shade200,
+        ),
       ),
 
       child: Row(
@@ -737,23 +977,33 @@ class _IrrigationScreenState extends State<IrrigationScreen> {
             decoration: BoxDecoration(
               shape: BoxShape.circle,
 
-              color: iconColor.withValues(alpha: 0.12),
+              color: iconColor.withValues(
+                alpha: 0.12,
+              ),
             ),
 
-            child: Icon(icon, color: iconColor, size: 22),
+            child: Icon(
+              icon,
+              color: iconColor,
+              size: 22,
+            ),
           ),
 
           const SizedBox(width: 13),
 
           Expanded(
             child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
+              crossAxisAlignment:
+                  CrossAxisAlignment.start,
 
               children: [
                 Text(
                   title,
 
-                  style: TextStyle(fontSize: 12, color: Colors.grey.shade600),
+                  style: TextStyle(
+                    fontSize: 12,
+                    color: Colors.grey.shade600,
+                  ),
                 ),
 
                 const SizedBox(height: 3),
@@ -772,13 +1022,20 @@ class _IrrigationScreenState extends State<IrrigationScreen> {
                 Text(
                   description,
 
-                  style: TextStyle(fontSize: 11, color: Colors.grey.shade500),
+                  style: TextStyle(
+                    fontSize: 11,
+                    color: Colors.grey.shade500,
+                  ),
                 ),
               ],
             ),
           ),
 
-          Icon(Icons.check_circle_rounded, color: iconColor, size: 21),
+          Icon(
+            Icons.check_circle_rounded,
+            color: iconColor,
+            size: 21,
+          ),
         ],
       ),
     );
@@ -788,7 +1045,10 @@ class _IrrigationScreenState extends State<IrrigationScreen> {
   // CONTROL ICON
   // ==========================================================
 
-  Widget _controlIcon(IconData icon, Color color) {
+  Widget _controlIcon(
+    IconData icon,
+    Color color,
+  ) {
     return Container(
       width: 44,
       height: 44,
@@ -796,10 +1056,16 @@ class _IrrigationScreenState extends State<IrrigationScreen> {
       decoration: BoxDecoration(
         shape: BoxShape.circle,
 
-        color: color.withValues(alpha: 0.12),
+        color: color.withValues(
+          alpha: 0.12,
+        ),
       ),
 
-      child: Icon(icon, color: color, size: 22),
+      child: Icon(
+        icon,
+        color: color,
+        size: 22,
+      ),
     );
   }
 
@@ -807,12 +1073,20 @@ class _IrrigationScreenState extends State<IrrigationScreen> {
   // STATUS BADGE
   // ==========================================================
 
-  Widget _statusBadge(String text, Color color) {
+  Widget _statusBadge(
+    String text,
+    Color color,
+  ) {
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
+      padding: const EdgeInsets.symmetric(
+        horizontal: 12,
+        vertical: 7,
+      ),
 
       decoration: BoxDecoration(
-        color: color.withValues(alpha: 0.12),
+        color: color.withValues(
+          alpha: 0.12,
+        ),
 
         borderRadius: BorderRadius.circular(30),
       ),
@@ -836,7 +1110,8 @@ class _IrrigationScreenState extends State<IrrigationScreen> {
   String _formatDuration(int seconds) {
     final int minutes = seconds ~/ 60;
 
-    final int remainingSeconds = seconds % 60;
+    final int remainingSeconds =
+        seconds % 60;
 
     return '${minutes.toString().padLeft(2, '0')}:'
         '${remainingSeconds.toString().padLeft(2, '0')}';

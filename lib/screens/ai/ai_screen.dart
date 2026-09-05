@@ -1,5 +1,7 @@
 import 'dart:io';
 
+import '../../services/disease_service.dart';
+
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 
@@ -30,7 +32,7 @@ class _AIScreenState extends State<AIScreen> {
   // Later these values will come from your AI model/API.
   String diseaseName = 'Healthy Paddy';
   double confidence = 0.94;
-
+  Map<String, dynamic>? diseaseResult;
   // ==========================================================
   // TAKE PHOTO
   // ==========================================================
@@ -85,42 +87,42 @@ class _AIScreenState extends State<AIScreen> {
 
   Future<void> analyzeImage() async {
     if (selectedImage == null) {
-      _showError('Please select or capture a crop image first.');
       return;
     }
 
     setState(() {
       isAnalyzing = true;
-      hasResult = false;
     });
 
-    // ========================================================
-    // TEMPORARY DEMO
-    //
-    // Later replace this section with:
-    //
-    // Flutter
-    //    ↓
-    // POST /disease/predict
-    //    ↓
-    // FastAPI
-    //    ↓
-    // InceptionV3 / your trained model
-    //    ↓
-    // prediction
-    // ========================================================
+    try {
+      final result = await DiseaseService.predictCropDisease(
+        selectedImage!,
+        farmId: 1,
+      );
 
-    await Future.delayed(const Duration(seconds: 2));
+      setState(() {
+        diseaseResult = result;
 
-    if (!mounted) return;
+        diseaseName = result['disease']?.toString() ?? 'Unknown';
 
-    setState(() {
-      isAnalyzing = false;
-      hasResult = true;
+        confidence = result['confidence'] is num
+            ? (result['confidence'] as num).toDouble()
+            : 0.0;
 
-      diseaseName = 'Healthy Paddy';
-      confidence = 0.94;
-    });
+        hasResult = true;
+        isAnalyzing = false;
+      });
+    } catch (e) {
+      setState(() {
+        isAnalyzing = false;
+      });
+
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('Disease analysis failed: $e')));
+      }
+    }
   }
 
   // ==========================================================
@@ -590,38 +592,54 @@ class _AIScreenState extends State<AIScreen> {
   Widget _buildResultCard() {
     final int confidencePercent = (confidence * 100).round();
 
+    final String status =
+        diseaseResult?['status']?.toString() ??
+        (diseaseName.toLowerCase() == 'healthy'
+            ? 'Healthy'
+            : 'Disease Detected');
+
+    final bool isHealthy =
+        diseaseName.toLowerCase() == 'healthy' ||
+        status.toLowerCase() == 'healthy';
+
+    final double scale = diseaseResult?['scale'] is num
+        ? (diseaseResult!['scale'] as num).toDouble()
+        : 0.0;
+
+    final Color statusColor = isHealthy ? Colors.green : Colors.red.shade600;
+
     return Container(
       width: double.infinity,
-
       padding: const EdgeInsets.all(18),
-
       decoration: BoxDecoration(
         color: Colors.white,
-
         borderRadius: BorderRadius.circular(22),
-
-        border: Border.all(color: Colors.green.shade200),
+        border: Border.all(
+          color: isHealthy ? Colors.green.shade200 : Colors.red.shade200,
+        ),
       ),
-
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
-
         children: [
+          // ----------------------------------------------------
+          // DISEASE + STATUS
+          // ----------------------------------------------------
+
           Row(
             children: [
               Container(
-                width: 48,
-                height: 48,
-
+                width: 52,
+                height: 52,
                 decoration: BoxDecoration(
                   shape: BoxShape.circle,
-                  color: Colors.green.shade100,
+                  color: isHealthy ? Colors.green.shade50 : Colors.red.shade50,
                 ),
-
                 child: Icon(
-                  Icons.health_and_safety_rounded,
-                  color: Colors.green.shade700,
-                  size: 25,
+                  isHealthy
+                      ? Icons.health_and_safety_rounded
+                      : Icons.coronavirus_rounded,
+                  color: statusColor,
+                  size: 27,
                 ),
               ),
 
@@ -630,22 +648,21 @@ class _AIScreenState extends State<AIScreen> {
               Expanded(
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
-
                   children: [
                     Text(
                       'Detected condition',
                       style: TextStyle(
-                        fontSize: 12,
+                        fontSize: 13,
                         color: Colors.grey.shade600,
                       ),
                     ),
 
-                    const SizedBox(height: 3),
+                    const SizedBox(height: 4),
 
                     Text(
                       diseaseName,
                       style: const TextStyle(
-                        fontSize: 18,
+                        fontSize: 20,
                         fontWeight: FontWeight.bold,
                       ),
                     ),
@@ -653,45 +670,88 @@ class _AIScreenState extends State<AIScreen> {
                 ),
               ),
 
-              _statusBadge('Healthy', Colors.green),
+              const SizedBox(width: 8),
+
+              _statusBadge(isHealthy ? 'Healthy' : 'Diseased', statusColor),
             ],
           ),
 
-          const SizedBox(height: 20),
+          const SizedBox(height: 22),
 
+          // ----------------------------------------------------
+          // CONFIDENCE
+          // ----------------------------------------------------
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
-
             children: [
               Text(
                 'AI Confidence',
-                style: TextStyle(fontSize: 13, color: Colors.grey.shade600),
+                style: TextStyle(fontSize: 14, color: Colors.grey.shade600),
               ),
 
               Text(
                 '$confidencePercent%',
                 style: const TextStyle(
                   fontWeight: FontWeight.bold,
-                  fontSize: 14,
+                  fontSize: 16,
                 ),
               ),
             ],
           ),
 
-          const SizedBox(height: 8),
+          const SizedBox(height: 9),
 
           ClipRRect(
             borderRadius: BorderRadius.circular(10),
-
             child: LinearProgressIndicator(
-              value: confidence,
-
-              minHeight: 8,
-
+              value: confidence.clamp(0.0, 1.0),
+              minHeight: 9,
               backgroundColor: Colors.grey.shade200,
-
-              valueColor: AlwaysStoppedAnimation<Color>(Colors.green.shade600),
+              valueColor: AlwaysStoppedAnimation<Color>(statusColor),
             ),
+          ),
+
+          const SizedBox(height: 20),
+
+          // ----------------------------------------------------
+          // SEVERITY SCALE
+          // ----------------------------------------------------
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Text(
+                'Severity Scale',
+                style: TextStyle(fontSize: 14, color: Colors.grey.shade600),
+              ),
+
+              Container(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 14,
+                  vertical: 8,
+                ),
+                decoration: BoxDecoration(
+                  color: isHealthy
+                      ? Colors.green.shade50
+                      : Colors.orange.shade50,
+                  borderRadius: BorderRadius.circular(14),
+                  border: Border.all(
+                    color: isHealthy
+                        ? Colors.green.shade200
+                        : Colors.orange.shade200,
+                  ),
+                ),
+                child: Text(
+                  isHealthy ? 'Healthy' : 'Level ${scale.toStringAsFixed(1)}',
+                  style: TextStyle(
+                    fontWeight: FontWeight.bold,
+                    fontSize: 14,
+                    color: isHealthy
+                        ? Colors.green.shade700
+                        : Colors.orange.shade700,
+                  ),
+                ),
+              ),
+            ],
           ),
         ],
       ),
@@ -703,38 +763,60 @@ class _AIScreenState extends State<AIScreen> {
   // ==========================================================
 
   Widget _buildRecommendationCard() {
+    final String recommendation =
+        diseaseResult?['recommendation']?.toString() ??
+        'No recommendation available.';
+
+    final String symptoms =
+        diseaseResult?['symptoms']?.toString() ??
+        'No symptom information available.';
+
+    final String cause =
+        diseaseResult?['cause']?.toString() ??
+        'No cause information available.';
+
+    final String treatment =
+        diseaseResult?['treatment']?.toString() ??
+        'No treatment information available.';
+
+    final String prevention =
+        diseaseResult?['prevention']?.toString() ??
+        'No prevention information available.';
+
+    final bool isHealthy = diseaseName.toLowerCase() == 'healthy';
+
+    final Color accentColor = isHealthy ? Colors.green : Colors.orange.shade700;
+
     return Container(
       width: double.infinity,
-
       padding: const EdgeInsets.all(18),
-
       decoration: BoxDecoration(
         color: Colors.white,
-
         borderRadius: BorderRadius.circular(20),
-
         border: Border.all(color: Colors.grey.shade200),
       ),
-
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
-
         children: [
+          // ----------------------------------------------------
+          // TITLE
+          // ----------------------------------------------------
+
           Row(
             children: [
               Container(
-                width: 40,
-                height: 40,
-
+                width: 42,
+                height: 42,
                 decoration: BoxDecoration(
                   shape: BoxShape.circle,
-                  color: Colors.orange.shade50,
+                  color: isHealthy
+                      ? Colors.green.shade50
+                      : Colors.orange.shade50,
                 ),
-
                 child: Icon(
                   Icons.lightbulb_rounded,
-                  color: Colors.orange.shade700,
-                  size: 22,
+                  color: accentColor,
+                  size: 23,
                 ),
               ),
 
@@ -742,32 +824,61 @@ class _AIScreenState extends State<AIScreen> {
 
               const Text(
                 'Recommendation',
-                style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+                style: TextStyle(fontSize: 17, fontWeight: FontWeight.bold),
               ),
             ],
           ),
 
-          const SizedBox(height: 13),
+          const SizedBox(height: 15),
 
+          // ----------------------------------------------------
+          // MAIN RECOMMENDATION
+          // ----------------------------------------------------
           Text(
-            'Your crop appears healthy. Continue '
-            'regular monitoring and maintain proper '
-            'irrigation and field conditions.',
-
+            recommendation,
             style: TextStyle(
-              fontSize: 13,
-              height: 1.5,
+              fontSize: 14,
+              height: 1.55,
               color: Colors.grey.shade700,
             ),
           ),
 
-          const SizedBox(height: 10),
+          const SizedBox(height: 20),
 
+          // ----------------------------------------------------
+          // SYMPTOMS
+          // ----------------------------------------------------
+          _infoSection('Symptoms', symptoms, Icons.visibility_rounded),
+
+          const SizedBox(height: 15),
+
+          // ----------------------------------------------------
+          // CAUSE
+          // ----------------------------------------------------
+          _infoSection('Cause', cause, Icons.help_outline_rounded),
+
+          const SizedBox(height: 15),
+
+          // ----------------------------------------------------
+          // TREATMENT
+          // ----------------------------------------------------
+          _infoSection('Treatment', treatment, Icons.medical_services_outlined),
+
+          const SizedBox(height: 15),
+
+          // ----------------------------------------------------
+          // PREVENTION
+          // ----------------------------------------------------
+          _infoSection('Prevention', prevention, Icons.shield_outlined),
+
+          const SizedBox(height: 18),
+
+          // ----------------------------------------------------
+          // DISCLAIMER
+          // ----------------------------------------------------
           Text(
-            'Note: AI results are advisory. '
-            'Confirm serious disease symptoms with '
-            'an agricultural expert.',
-
+            'Note: AI results are advisory. Confirm serious '
+            'disease symptoms with an agricultural expert.',
             style: TextStyle(
               fontSize: 11,
               color: Colors.grey.shade500,
@@ -776,6 +887,43 @@ class _AIScreenState extends State<AIScreen> {
           ),
         ],
       ),
+    );
+  }
+
+  Widget _infoSection(String title, String value, IconData icon) {
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Icon(icon, size: 20, color: Colors.green.shade700),
+
+        const SizedBox(width: 10),
+
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                title,
+                style: const TextStyle(
+                  fontSize: 14,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+
+              const SizedBox(height: 4),
+
+              Text(
+                value,
+                style: TextStyle(
+                  fontSize: 13,
+                  height: 1.45,
+                  color: Colors.grey.shade700,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ],
     );
   }
 
